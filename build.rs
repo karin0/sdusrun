@@ -1,4 +1,4 @@
-use std::{env, net::Ipv4Addr};
+use std::env;
 
 fn main() {
     let auth_server_ip = env!(
@@ -6,7 +6,4 @@ fn main() {
         "Expect env AUTH_SERVER_IP, export AUTH_SERVER_IP=10.0.0.1"
     );
     println!("ENV AUTH_SERVER_IP = {auth_server_ip}");
-    auth_server_ip
-        .parse::<Ipv4Addr>()
-        .expect(&format!("AUTH_SERVER_IP invalid"));
 }
