@@ -6,7 +6,7 @@ use crate::{
 use hmac::{Hmac, Mac};
 use md5::Md5;
 use quick_error::quick_error;
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use sha1::{Digest, Sha1};
 use std::{
     net::IpAddr,
@@ -17,6 +17,7 @@ use std::{
 
 const PATH_GET_CHALLENGE: &str = "/cgi-bin/get_challenge";
 const PATH_PORTAL: &str = "/cgi-bin/srun_portal";
+const CALLBACK_NAME: &str = "jQuery112407419864172676014_1566720734115";
 
 #[derive(Default, Debug)]
 pub struct SrunClient {
@@ -27,6 +28,7 @@ pub struct SrunClient {
     ip: String,
     detect_ip: bool,
     strict_bind: bool,
+    callback_name: String,
 
     retry_delay: u32, // millis
     retry_times: u32,
@@ -160,6 +162,10 @@ impl SrunClient {
         })
     }
 
+    fn parse_resp<T: DeserializeOwned>(resp: &[u8]) -> serde_json::Result<T> {
+        serde_json::from_slice(&resp[CALLBACK_NAME.len() + 1..resp.len() - 1])
+    }
+
     fn get_token(&mut self) -> Result<String> {
         if !self.detect_ip && self.ip.is_empty() {
             println!("need ip");
@@ -174,7 +180,7 @@ impl SrunClient {
         let time = self.time.to_string();
 
         let query = vec![
-            ("callback", "sdu"),
+            ("callback", CALLBACK_NAME),
             ("username", &self.username),
             ("ip", &self.ip),
             ("_", &time),
@@ -184,13 +190,13 @@ impl SrunClient {
             #[cfg(feature = "reqwest")]
             {
                 let resp = req.query(&query).send()?.bytes()?;
-                serde_json::from_slice(&resp[4..resp.len() - 1])?
+                Self::parse_resp(&resp)?
             }
             #[cfg(feature = "ureq")]
             {
                 let resp = req.query_vec(query).call()?.into_string()?;
                 let resp = resp.as_bytes();
-                serde_json::from_slice(&resp[4..resp.len() - 1])?
+                Self::parse_resp(resp)?
             }
         };
 
@@ -274,7 +280,7 @@ impl SrunClient {
             let time = self.time.to_string();
 
             let query = vec![
-                ("callback", "sdu"),
+                ("callback", CALLBACK_NAME),
                 ("action", "login"),
                 ("username", &self.username),
                 ("password", &password),
@@ -294,13 +300,13 @@ impl SrunClient {
                 #[cfg(feature = "reqwest")]
                 {
                     let resp = req.query(&query).send()?.bytes()?;
-                    serde_json::from_slice(&resp[4..resp.len() - 1])?
+                    Self::parse_resp(&resp)?
                 }
                 #[cfg(feature = "ureq")]
                 {
                     let resp = req.query_vec(query).call()?.into_string()?;
                     let resp = resp.as_bytes();
-                    serde_json::from_slice(&resp[4..resp.len() - 1])?
+                    Self::parse_resp(resp)?
                 }
             };
 
@@ -326,7 +332,7 @@ impl SrunClient {
         let ac_id = self.acid.to_string();
         let time = unix_second().to_string();
         let query = vec![
-            ("callback", "sdu"),
+            ("callback", CALLBACK_NAME),
             ("action", "logout"),
             ("username", &self.username),
             ("ip", &self.ip),
@@ -338,13 +344,13 @@ impl SrunClient {
             #[cfg(feature = "reqwest")]
             {
                 let resp = req.query(&query).send()?.bytes()?;
-                serde_json::from_slice(&resp[4..resp.len() - 1])?
+                Self::parse_resp(&resp)?
             }
             #[cfg(feature = "ureq")]
             {
                 let resp = req.query_vec(query).call()?.into_string()?;
                 let resp = resp.as_bytes();
-                serde_json::from_slice(&resp[4..resp.len() - 1])?
+                Self::parse_resp(resp)?
             }
         };
 
