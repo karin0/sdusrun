@@ -15,8 +15,6 @@ build = "build.rs"
 [profile.release]
 strip = true
 lto = true
-opt-level = "s"
-codegen-units = 1
 panic = "abort"
 
 
@@ -28,7 +26,7 @@ if-addrs = "0.7"
 lazy_static = "1.4"
 md-5 = "0.10"
 quick-error = "2.0"
-reqwest = { version = "0.11", default-features = false, features = ["blocking"], optional = true }
+reqwest = { version = "0.11", features = ["blocking"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha-1 = "0.10"
@@ -36,8 +34,7 @@ ureq = { git = "https://github.com/zu1k/ureq.git", branch = "sdusrun", default-f
 socket2 = "0.4"
 
 [features]
-default = ["ureq"]
-tls = ["ureq-rust-tls"]
+default = ["reqwest"]
 
 # ureq
 ureq-rust-tls = ["ureq", "ureq/tls"]
