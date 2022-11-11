@@ -26,12 +26,14 @@ if-addrs = "0.7"
 once_cell = "1"
 md-5 = "0.10"
 quick-error = "2.0"
-reqwest = { version = "0.11", features = ["blocking"], optional = true }
+reqwest = { version = "0.11", features = ["blocking", "rustls-tls"], default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha-1 = "0.10"
 ureq = { git = "https://github.com/zu1k/ureq.git", branch = "sdusrun", default-features = false, optional = true }
 socket2 = "0.4"
+log = "0.4"
+pretty_env_logger = "0.4"
 
 [features]
 default = ["reqwest"]

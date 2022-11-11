@@ -12,6 +12,14 @@ fn print_usage(opts: Option<&Options>) {
 }
 
 fn main() {
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "info");
+    }
+    if env::var("JOURNAL_STREAM").is_ok() {
+        pretty_env_logger::init();
+    } else {
+        pretty_env_logger::init_timed();
+    }
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         print_usage(None);
@@ -49,6 +57,7 @@ fn login_match(args: &[String]) {
         opts.optopt("", "name", "name, e.g. Windows 98", "");
         opts.optopt("", "retry-delay", "retry delay, default 300 millis", "");
         opts.optopt("", "retry-times", "retry times, default 10 times", "");
+        opts.optflag("", "daemon", "");
         opts
     };
 
@@ -228,9 +237,12 @@ fn single_login(matches: Matches) {
         client.set_retry_times(retry_times.parse().unwrap_or(10));
     }
 
-    if let Err(e) = client.login() {
-        println!("login error: {}", e);
+    if matches.opt_present("daemon") {
+        client.daemon();
+        return;
     }
+
+    println!("login: {:?}", client.login());
 }
 
 fn logout(matches: Matches) {

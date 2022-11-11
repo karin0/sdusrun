@@ -1,9 +1,12 @@
 use crate::Result;
+use log::debug;
 use quick_error::quick_error;
 use std::{
     io,
-    net::{IpAddr, TcpStream, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs},
+    option::Option,
     process::exit,
+    str::FromStr,
     time::{Duration, SystemTime},
 };
 
@@ -86,6 +89,79 @@ pub fn select_ip() -> Option<String> {
     }
     println!("invalid input for 3 times");
     None
+}
+
+#[derive(Debug, Clone)]
+pub struct IpFilter {
+    min: Ipv4Addr,
+    max: Ipv4Addr,
+    int_prefix: Option<String>,
+    ifs: Option<Vec<if_addrs::Interface>>,
+}
+
+impl IpFilter {
+    pub fn from_env() -> Option<Self> {
+        if let Ok(min) = std::env::var("SRUN_MIN_IP") {
+            let min = Ipv4Addr::from_str(&min).unwrap();
+            let max = Ipv4Addr::from_str(&std::env::var("SRUN_MAX_IP").unwrap()).unwrap();
+            Some(Self {
+                min,
+                max,
+                int_prefix: std::env::var("SRUN_INTERFACE_PREFIX").ok(),
+                ifs: None,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.ifs = Some(if_addrs::get_if_addrs().unwrap());
+    }
+
+    pub fn check(&mut self) -> bool {
+        self.refresh();
+        for int in self.ifs.as_ref().unwrap() {
+            if let IpAddr::V4(ip) = int.addr.ip() {
+                if ip >= self.min && ip < self.max {
+                    debug!("found ip: {:?}", int);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn current(&self) -> Option<String> {
+        if let Some(pre) = &self.int_prefix {
+            if let Some(ifs) = &self.ifs {
+                let mut name = None;
+                let mut res = vec![];
+                for int in ifs {
+                    if let IpAddr::V4(ip) = int.addr.ip() {
+                        if int.name.starts_with(pre) {
+                            res.push(if let Some(last) = name {
+                                if int.name.eq(last) {
+                                    ip.to_string()
+                                } else {
+                                    format!("{}: {}", int.name, ip)
+                                }
+                            } else {
+                                format!("{}: {}", int.name, ip)
+                            });
+                            name = Some(&int.name);
+                        }
+                    }
+                }
+                return if res.is_empty() {
+                    None
+                } else {
+                    Some(res.join(", "))
+                };
+            }
+        }
+        None
+    }
 }
 
 #[test]

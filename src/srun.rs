@@ -1,9 +1,11 @@
 use crate::{
     param_i,
-    utils::{self, get_ip_by_if_name},
+    srun::LoginResult::{Abroad, Failed, Logged, Success},
+    utils::{self, get_ip_by_if_name, IpFilter},
     Result, User,
 };
 use hmac::{Hmac, Mac};
+use log::{debug, error, info};
 use md5::Md5;
 use once_cell::unsync::OnceCell;
 use quick_error::quick_error;
@@ -48,6 +50,7 @@ pub struct SrunClient {
     time: u64,
 
     http: OnceCell<reqwest::blocking::Client>,
+    ip_filter: Option<IpFilter>,
 }
 
 quick_error! {
@@ -58,11 +61,23 @@ quick_error! {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoginResult {
+    Success,
+    Logged(String),
+    Abroad,
+    Failed,
+}
+
 impl SrunClient {
     pub fn new_from_user(auth_server: &str, user: User) -> Self {
         let ip = user
             .ip
             .unwrap_or_else(|| get_ip_by_if_name(&user.if_name.unwrap()).unwrap_or_default());
+        let ip_filter = IpFilter::from_env();
+        if let Some(f) = &ip_filter {
+            println!("using {:?}", f);
+        }
         Self {
             auth_server: auth_server.to_owned(),
             username: user.username,
@@ -75,6 +90,7 @@ impl SrunClient {
             name: "Windows".to_string(),
             retry_delay: 300,
             retry_times: 10,
+            ip_filter,
             ..Default::default()
         }
     }
@@ -141,7 +157,7 @@ impl SrunClient {
         self.http.get_or_try_init(|| {
             let client = reqwest::blocking::ClientBuilder::default()
                 .user_agent(USER_AGENT)
-                .connect_timeout(Duration::from_secs(3));
+                .connect_timeout(Duration::from_secs(10));
             let http = if self.strict_bind && !self.ip.is_empty() {
                 let local_addr = IpAddr::from_str(&self.ip)?;
                 client.local_address(local_addr)
@@ -224,20 +240,28 @@ impl SrunClient {
         Ok(self.token.clone())
     }
 
-    pub fn login(&mut self) -> Result<()> {
+    pub fn login(&mut self) -> Result<LoginResult> {
+        if let Some(f) = self.ip_filter.as_mut() {
+            if !f.check() {
+                return Ok(Abroad);
+            }
+        }
+
         if self.test_before_login {
             if let Ok(d) = utils::tcp_ping("baidu.com:80") {
                 println!(
                     "Network already connected: tcping baidu.com:80, delay: {}ms",
                     d
                 );
-                return Ok(());
+                return Ok(Logged("baidu.com:80".to_owned()));
             }
         }
 
-        if self.user_info()? {
-            println!("Already logged in");
-            return Ok(());
+        let msg = self.user_info()?;
+        if msg.contains("not_online_error") {
+            info!("offline: {msg}");
+        } else {
+            return Ok(Logged(msg));
         }
 
         // this will detect ip from response if detect_ip
@@ -326,13 +350,13 @@ impl SrunClient {
 
             if !result.access_token.is_empty() {
                 println!("try {}/{}: success\n{:#?}", ti, self.retry_times, result);
-                return Ok(());
+                return Ok(Success);
             }
             println!("try {}/{}: failed", ti, self.retry_times);
             thread::sleep(Duration::from_millis(self.retry_delay as u64));
         }
         println!("{:#?}", result);
-        Ok(())
+        Ok(Failed)
     }
 
     pub fn logout(&mut self) -> Result<()> {
@@ -372,12 +396,12 @@ impl SrunClient {
         Ok(())
     }
 
-    pub fn user_info(&mut self) -> Result<bool> {
+    pub fn user_info(&mut self) -> Result<String> {
         let req = self
             .get_http_client()?
             .get(format!("{}{}", self.auth_server, PATH_USER_INFO).as_str());
 
-        let result = {
+        Ok({
             #[cfg(feature = "reqwest")]
             {
                 req.send()?.text()?
@@ -386,10 +410,62 @@ impl SrunClient {
             {
                 todo!()
             }
-        };
+        })
+    }
 
-        println!("user_info: {:#?}", result);
-        Ok(!result.contains("not_online_error"))
+    fn current_ip(&self) -> Option<String> {
+        self.ip_filter.as_ref().and_then(|f| f.current())
+    }
+
+    pub fn daemon(&mut self) {
+        let delay = Duration::from_secs(5);
+        let mut abroad = false;
+        let mut ever_up = false;
+
+        loop {
+            let r = self.login();
+            debug!("login: {:?}", r);
+            match r {
+                Ok(r) => {
+                    if r != Abroad && abroad {
+                        abroad = false;
+                        if let Some(ip) = self.current_ip() {
+                            info!("back: {ip}");
+                        } else {
+                            info!("back");
+                        }
+                    }
+                    match r {
+                        Logged(online) => {
+                            if !ever_up {
+                                info!("online: {online}");
+                            }
+                            ever_up = true;
+                        }
+                        Success => {
+                            ever_up = true;
+                        }
+                        Abroad => {
+                            if !abroad {
+                                if let Some(ip) = self.current_ip() {
+                                    info!("into abroad: {ip}");
+                                } else {
+                                    info!("into abroad");
+                                }
+                            }
+                            abroad = true;
+                        }
+                        Failed => {
+                            error!("srun auth failed");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("network error: {e}");
+                }
+            };
+            thread::sleep(delay);
+        }
     }
 }
 
