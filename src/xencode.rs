@@ -2,15 +2,13 @@ use base64::{
     alphabet::Alphabet,
     engine::fast_portable::{FastPortable, PAD},
 };
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 
 const BASE64_ALPHABET: &str = "LVoJPiCN2R8G90yg+hmFHuacZ1OWMnrsSTXkYpUq/3dlbfKwv6xztjI7DeBE45QA";
-lazy_static! {
-    static ref BASE64_ENGINE: FastPortable = {
-        let alphabet = Alphabet::from_str(BASE64_ALPHABET).unwrap();
-        FastPortable::from(&alphabet, PAD)
-    };
-}
+static BASE64_ENGINE: Lazy<FastPortable> = Lazy::new(|| {
+    let alphabet = Alphabet::from_str(BASE64_ALPHABET).unwrap();
+    FastPortable::from(&alphabet, PAD)
+});
 
 fn mix(buffer: &[u8], append_size: bool) -> Vec<u32> {
     let mut res: Vec<u32> = buffer
