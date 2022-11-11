@@ -5,8 +5,9 @@ use crate::{
 };
 use hmac::{Hmac, Mac};
 use md5::Md5;
+use once_cell::unsync::OnceCell;
 use quick_error::quick_error;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize};
 use sha1::{Digest, Sha1};
 use std::{
     net::IpAddr,
@@ -17,6 +18,9 @@ use std::{
 
 const PATH_GET_CHALLENGE: &str = "/cgi-bin/get_challenge";
 const PATH_PORTAL: &str = "/cgi-bin/srun_portal";
+const PATH_USER_INFO: &str = "/cgi-bin/rad_user_info";
+
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36";
 const CALLBACK_NAME: &str = "jQuery112407419864172676014_1566720734115";
 
 #[derive(Default, Debug)]
@@ -28,7 +32,6 @@ pub struct SrunClient {
     ip: String,
     detect_ip: bool,
     strict_bind: bool,
-    callback_name: String,
 
     retry_delay: u32, // millis
     retry_times: u32,
@@ -43,6 +46,8 @@ pub struct SrunClient {
     n: i32,
     utype: i32,
     time: u64,
+
+    http: OnceCell<reqwest::blocking::Client>,
 }
 
 quick_error! {
@@ -132,15 +137,19 @@ impl SrunClient {
     }
 
     #[cfg(feature = "reqwest")]
-    pub fn get_http_client(&self) -> Result<reqwest::blocking::Client> {
-        Ok(if self.strict_bind && !self.ip.is_empty() {
-            let local_addr = IpAddr::from_str(&self.ip)?;
-            reqwest::blocking::ClientBuilder::default()
-                .local_address(local_addr)
-                .connect_timeout(Duration::from_secs(3))
-                .build()?
-        } else {
-            reqwest::blocking::Client::default()
+    pub fn get_http_client(&self) -> Result<&reqwest::blocking::Client> {
+        self.http.get_or_try_init(|| {
+            let client = reqwest::blocking::ClientBuilder::default()
+                .user_agent(USER_AGENT)
+                .connect_timeout(Duration::from_secs(3));
+            let http = if self.strict_bind && !self.ip.is_empty() {
+                let local_addr = IpAddr::from_str(&self.ip)?;
+                client.local_address(local_addr)
+            } else {
+                client
+            }
+            .build()?;
+            Ok(http)
         })
     }
 
@@ -224,6 +233,11 @@ impl SrunClient {
                 );
                 return Ok(());
             }
+        }
+
+        if self.user_info()? {
+            println!("Already logged in");
+            return Ok(());
         }
 
         // this will detect ip from response if detect_ip
@@ -356,6 +370,26 @@ impl SrunClient {
 
         println!("{:#?}", result);
         Ok(())
+    }
+
+    pub fn user_info(&mut self) -> Result<bool> {
+        let req = self
+            .get_http_client()?
+            .get(format!("{}{}", self.auth_server, PATH_USER_INFO).as_str());
+
+        let result = {
+            #[cfg(feature = "reqwest")]
+            {
+                req.send()?.text()?
+            }
+            #[cfg(feature = "ureq")]
+            {
+                todo!()
+            }
+        };
+
+        println!("user_info: {:#?}", result);
+        Ok(!result.contains("not_online_error"))
     }
 }
 
