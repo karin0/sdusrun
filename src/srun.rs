@@ -24,6 +24,8 @@ const PATH_USER_INFO: &str = "/cgi-bin/rad_user_info";
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36";
 const CALLBACK_NAME: &str = "jQuery112407419864172676014_1566720734115";
+const REFERER: &str =
+    "https://gw.buaa.edu.cn/srun_portal_pc?ac_id=1&theme=buaa&url=www.buaa.edu.cn";
 
 #[derive(Default, Debug)]
 pub struct SrunClient {
@@ -83,13 +85,13 @@ impl SrunClient {
             username: user.username,
             password: user.password,
             ip,
-            acid: 12,
+            acid: 1,
             n: 200,
             utype: 1,
             os: "Windows 10".to_string(),
             name: "Windows".to_string(),
             retry_delay: 300,
-            retry_times: 10,
+            retry_times: 2,
             ip_filter,
             ..Default::default()
         }
@@ -155,8 +157,19 @@ impl SrunClient {
     #[cfg(feature = "reqwest")]
     pub fn get_http_client(&self) -> Result<&reqwest::blocking::Client> {
         self.http.get_or_try_init(|| {
+            use reqwest::header::{HeaderMap, HeaderValue};
+            let mut headers: HeaderMap = HeaderMap::with_capacity(6);
+            headers.append("DNT", HeaderValue::from_static("1"));
+            headers.append(
+                "X-Requested-With",
+                HeaderValue::from_static("XMLHttpRequest"),
+            );
+            headers.append("User-Agent", HeaderValue::from_static(USER_AGENT));
+            headers.append("Sec-Fetch-Mode", HeaderValue::from_static("cors"));
+            headers.append("Sec-Fetch-Site", HeaderValue::from_static("same-origin"));
+            headers.append("Referer", HeaderValue::from_static(REFERER));
             let client = reqwest::blocking::ClientBuilder::default()
-                .user_agent(USER_AGENT)
+                .default_headers(headers)
                 .connect_timeout(Duration::from_secs(10));
             let http = if self.strict_bind && !self.ip.is_empty() {
                 let local_addr = IpAddr::from_str(&self.ip)?;
@@ -304,7 +317,6 @@ impl SrunClient {
         };
 
         println!("will try at most {} times...", self.retry_times);
-        let mut result = PortalResponse::default();
         for ti in 1..=self.retry_times {
             let req = self
                 .get_http_client()?
@@ -334,7 +346,8 @@ impl SrunClient {
                 ("_", &time),
             ];
 
-            result = {
+            debug!("sending: {:?}", query);
+            let result: PortalResponse = {
                 #[cfg(feature = "reqwest")]
                 {
                     let resp = req.query(&query).send()?.bytes()?;
@@ -347,15 +360,15 @@ impl SrunClient {
                     Self::parse_resp(resp)?
                 }
             };
+            info!("portal: {result:?}");
 
             if !result.access_token.is_empty() {
-                println!("try {}/{}: success\n{:#?}", ti, self.retry_times, result);
+                info!("try {}/{}: success\n{:#?}", ti, self.retry_times, result);
                 return Ok(Success);
             }
-            println!("try {}/{}: failed", ti, self.retry_times);
+            error!("try {}/{}: failed", ti, self.retry_times);
             thread::sleep(Duration::from_millis(self.retry_delay as u64));
         }
-        println!("{:#?}", result);
         Ok(Failed)
     }
 
