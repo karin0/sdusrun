@@ -3,7 +3,6 @@ on: push
 
 env:
   CARGO_TERM_COLOR: always
-  AUTH_SERVER_IP: ${{ secrets.AUTH_SERVER_IP }}
   RUST_BACKTRACE: full
 
 jobs:

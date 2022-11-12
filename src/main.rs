@@ -115,10 +115,7 @@ fn config_login(matches: Matches) {
             let server = config
                 .server
                 .clone()
-                .unwrap_or_else(|| match matches.opt_str("s") {
-                    Some(u) => u,
-                    None => format!("http://{}", env!("AUTH_SERVER_IP")),
-                });
+                .unwrap_or_else(|| matches.opt_str("s").unwrap());
             for user in config_i {
                 println!("login user: {:#?}", user);
                 let mut client = SrunClient::new_from_user(&server, user)
@@ -158,10 +155,7 @@ fn config_login(matches: Matches) {
 }
 
 fn single_login(matches: Matches) {
-    let auth_server = match matches.opt_str("s") {
-        Some(u) => u,
-        None => format!("http://{}", env!("AUTH_SERVER_IP")),
-    };
+    let auth_server = matches.opt_str("s").unwrap();
     let username = match matches.opt_str("u") {
         Some(u) => u,
         None => {
@@ -246,10 +240,7 @@ fn single_login(matches: Matches) {
 }
 
 fn logout(matches: Matches) {
-    let auth_server = match matches.opt_str("s") {
-        Some(u) => u,
-        None => format!("http://{}", env!("AUTH_SERVER_IP")),
-    };
+    let auth_server = matches.opt_str("s").unwrap();
     let username = match matches.opt_str("u") {
         Some(u) => u,
         None => {
