@@ -306,6 +306,7 @@ impl SrunClient {
 
     fn refresh(&mut self) -> Result<()> {
         let index = self.get_req(PATH_INDEX)?.send()?;
+        let base = index.url();
         debug!("index: {index:?}");
         let url = index
             .headers()
@@ -323,7 +324,7 @@ impl SrunClient {
         };
         let acid = url[p..q].parse::<i32>()?;
         info!("acid: {acid} ({url})");
-        self.referer = Some(url);
+        self.referer = Some(base.join(&url)?.to_string());
         self.acid = acid;
         Ok(())
     }
