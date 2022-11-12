@@ -1,6 +1,6 @@
 use crate::{
     param_i,
-    srun::LoginResult::{Abroad, Failed, Logged, Success},
+    srun::LoginResult::{Failed, Logged, Success},
     utils::{self, get_ip_by_if_name, IpFilter},
     Result, User,
 };
@@ -18,14 +18,13 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+const PATH_INDEX: &str = "/index_1.html";
 const PATH_GET_CHALLENGE: &str = "/cgi-bin/get_challenge";
 const PATH_PORTAL: &str = "/cgi-bin/srun_portal";
 const PATH_USER_INFO: &str = "/cgi-bin/rad_user_info";
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36";
 const CALLBACK_NAME: &str = "jQuery112407419864172676014_1566720734115";
-const REFERER: &str =
-    "https://gw.buaa.edu.cn/srun_portal_pc?ac_id=1&theme=buaa&url=www.buaa.edu.cn";
 
 #[derive(Default, Debug)]
 pub struct SrunClient {
@@ -52,6 +51,8 @@ pub struct SrunClient {
     time: u64,
 
     http: OnceCell<reqwest::blocking::Client>,
+    http_redir: OnceCell<reqwest::blocking::Client>,
+    referer: Option<String>,
     ip_filter: Option<IpFilter>,
 }
 
@@ -60,6 +61,7 @@ quick_error! {
     pub enum SrunError {
         GetChallengeFailed
         IpUndefinedError
+        NoAcidError
     }
 }
 
@@ -67,7 +69,6 @@ quick_error! {
 pub enum LoginResult {
     Success,
     Logged(String),
-    Abroad,
     Failed,
 }
 
@@ -155,31 +156,42 @@ impl SrunClient {
     }
 
     #[cfg(feature = "reqwest")]
+    pub fn http_builder(&self) -> reqwest::blocking::ClientBuilder {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers: HeaderMap = HeaderMap::with_capacity(5);
+        headers.append("DNT", HeaderValue::from_static("1"));
+        headers.append(
+            "X-Requested-With",
+            HeaderValue::from_static("XMLHttpRequest"),
+        );
+        headers.append("User-Agent", HeaderValue::from_static(USER_AGENT));
+        headers.append("Sec-Fetch-Mode", HeaderValue::from_static("cors"));
+        headers.append("Sec-Fetch-Site", HeaderValue::from_static("same-origin"));
+        let client = reqwest::blocking::ClientBuilder::default()
+            .default_headers(headers)
+            .connect_timeout(Duration::from_secs(10));
+        if self.strict_bind && !self.ip.is_empty() {
+            let local_addr = IpAddr::from_str(&self.ip).unwrap();
+            client.local_address(local_addr)
+        } else {
+            client
+        }
+    }
+
+    #[cfg(feature = "reqwest")]
     pub fn get_http_client(&self) -> Result<&reqwest::blocking::Client> {
         self.http.get_or_try_init(|| {
-            use reqwest::header::{HeaderMap, HeaderValue};
-            let mut headers: HeaderMap = HeaderMap::with_capacity(6);
-            headers.append("DNT", HeaderValue::from_static("1"));
-            headers.append(
-                "X-Requested-With",
-                HeaderValue::from_static("XMLHttpRequest"),
-            );
-            headers.append("User-Agent", HeaderValue::from_static(USER_AGENT));
-            headers.append("Sec-Fetch-Mode", HeaderValue::from_static("cors"));
-            headers.append("Sec-Fetch-Site", HeaderValue::from_static("same-origin"));
-            headers.append("Referer", HeaderValue::from_static(REFERER));
-            let client = reqwest::blocking::ClientBuilder::default()
-                .default_headers(headers)
-                .connect_timeout(Duration::from_secs(10));
-            let http = if self.strict_bind && !self.ip.is_empty() {
-                let local_addr = IpAddr::from_str(&self.ip)?;
-                client.local_address(local_addr)
-            } else {
-                client
-            }
-            .build()?;
-            Ok(http)
+            Ok(self
+                .http_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?)
         })
+    }
+
+    #[cfg(feature = "reqwest")]
+    pub fn get_http_client_redir(&self) -> Result<&reqwest::blocking::Client> {
+        self.http_redir
+            .get_or_try_init(|| Ok(self.http_builder().build()?))
     }
 
     #[cfg(feature = "ureq")]
@@ -204,6 +216,62 @@ impl SrunClient {
         serde_json::from_slice(&resp[CALLBACK_NAME.len() + 1..resp.len() - 1])
     }
 
+    #[cfg(feature = "reqwest")]
+    fn cli_get_req(
+        &self,
+        cli: &reqwest::blocking::Client,
+        path: &str,
+    ) -> reqwest::blocking::RequestBuilder {
+        let r = cli.get(format!("{}{}", self.auth_server, path).as_str());
+        if let Some(s) = &self.referer {
+            r.header("Referer", s)
+        } else {
+            r
+        }
+    }
+
+    #[cfg(feature = "reqwest")]
+    fn get_req(&self, path: &str) -> Result<reqwest::blocking::RequestBuilder> {
+        Ok(self.cli_get_req(self.get_http_client()?, path))
+    }
+
+    #[cfg(feature = "reqwest")]
+    fn get_req_redir(&self, path: &str) -> Result<reqwest::blocking::RequestBuilder> {
+        Ok(self.cli_get_req(self.get_http_client_redir()?, path))
+    }
+
+    fn get_json<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T> {
+        let req = self.get_req(path)?;
+        Ok({
+            #[cfg(feature = "reqwest")]
+            {
+                let resp = req.query(&query).send()?.bytes()?;
+                Self::parse_resp(&resp)
+            }
+            #[cfg(feature = "ureq")]
+            {
+                // FIXME
+                let resp = req.query_vec(query).call()?.into_string()?;
+                let resp = resp.as_bytes();
+                Self::parse_resp(resp)
+            }
+        }?)
+    }
+
+    fn get_text_redir(&self, path: &str) -> Result<String> {
+        let req = self.get_req_redir(path)?;
+        Ok({
+            #[cfg(feature = "reqwest")]
+            {
+                req.send()?.text()?
+            }
+            #[cfg(feature = "ureq")]
+            {
+                todo!()
+            }
+        })
+    }
+
     fn get_token(&mut self) -> Result<String> {
         if !self.detect_ip && self.ip.is_empty() {
             println!("need ip");
@@ -211,10 +279,6 @@ impl SrunClient {
         }
 
         self.time = unix_second() - 2;
-        let req = self
-            .get_http_client()?
-            .get(format!("{}{}", self.auth_server, PATH_GET_CHALLENGE).as_str());
-
         let time = self.time.to_string();
 
         let query = vec![
@@ -224,21 +288,8 @@ impl SrunClient {
             ("_", &time),
         ];
 
-        let challenge: ChallengeResponse = {
-            #[cfg(feature = "reqwest")]
-            {
-                let resp = req.query(&query).send()?.bytes()?;
-                Self::parse_resp(&resp)?
-            }
-            #[cfg(feature = "ureq")]
-            {
-                let resp = req.query_vec(query).call()?.into_string()?;
-                let resp = resp.as_bytes();
-                Self::parse_resp(resp)?
-            }
-        };
-
-        println!("{:#?}", challenge);
+        let challenge: ChallengeResponse = self.get_json(PATH_GET_CHALLENGE, &query)?;
+        info!("challenge: {:?}", challenge);
         match challenge.challenge.clone() {
             Some(token) => {
                 self.token = token;
@@ -253,13 +304,31 @@ impl SrunClient {
         Ok(self.token.clone())
     }
 
-    pub fn login(&mut self) -> Result<LoginResult> {
-        if let Some(f) = self.ip_filter.as_mut() {
-            if !f.check() {
-                return Ok(Abroad);
-            }
-        }
+    fn refresh(&mut self) -> Result<()> {
+        let index = self.get_req(PATH_INDEX)?.send()?;
+        debug!("index: {index:?}");
+        let url = index
+            .headers()
+            .get("Location")
+            .ok_or_else(|| Box::new(SrunError::NoAcidError))?
+            .to_str()?
+            .to_owned();
+        let p = match url.find("ac_id=") {
+            Some(p) => p + 6,
+            _ => return Err(Box::new(SrunError::NoAcidError)),
+        };
+        let q = match url[p..].find('&') {
+            Some(q) => p + q,
+            _ => url.len(),
+        };
+        let acid = url[p..q].parse::<i32>()?;
+        info!("acid: {acid} ({url})");
+        self.referer = Some(url);
+        self.acid = acid;
+        Ok(())
+    }
 
+    pub fn login(&mut self) -> Result<LoginResult> {
         if self.test_before_login {
             if let Ok(d) = utils::tcp_ping("baidu.com:80") {
                 println!(
@@ -272,11 +341,12 @@ impl SrunClient {
 
         let msg = self.user_info()?;
         if msg.contains("not_online_error") {
-            info!("offline: {msg}");
+            info!("offline: {}", msg);
         } else {
             return Ok(Logged(msg));
         }
 
+        self.refresh()?;
         // this will detect ip from response if detect_ip
         self.get_token()?;
 
@@ -316,12 +386,9 @@ impl SrunClient {
             format!("{:x}", sha1_hasher.finalize())
         };
 
-        println!("will try at most {} times...", self.retry_times);
+        debug!("will try at most {} times...", self.retry_times);
+        thread::sleep(Duration::from_millis(100));
         for ti in 1..=self.retry_times {
-            let req = self
-                .get_http_client()?
-                .get(format!("{}{}", self.auth_server, PATH_PORTAL).as_str());
-
             let password = format!("{{MD5}}{}", hmd5);
             let ac_id = self.acid.to_string();
             let n = self.n.to_string();
@@ -346,24 +413,12 @@ impl SrunClient {
                 ("_", &time),
             ];
 
-            debug!("sending: {:?}", query);
-            let result: PortalResponse = {
-                #[cfg(feature = "reqwest")]
-                {
-                    let resp = req.query(&query).send()?.bytes()?;
-                    Self::parse_resp(&resp)?
-                }
-                #[cfg(feature = "ureq")]
-                {
-                    let resp = req.query_vec(query).call()?.into_string()?;
-                    let resp = resp.as_bytes();
-                    Self::parse_resp(resp)?
-                }
-            };
+            info!("query: {:?}", query);
+            let result: PortalResponse = self.get_json(PATH_PORTAL, &query)?;
             info!("portal: {result:?}");
 
             if !result.access_token.is_empty() {
-                info!("try {}/{}: success\n{:#?}", ti, self.retry_times, result);
+                info!("try {}/{}: success", ti, self.retry_times);
                 return Ok(Success);
             }
             error!("try {}/{}: failed", ti, self.retry_times);
@@ -376,9 +431,6 @@ impl SrunClient {
         if self.detect_ip {
             self.get_token()?;
         }
-        let req = self
-            .get_http_client()?
-            .get(format!("{}{}", self.auth_server, PATH_PORTAL).as_str());
 
         let ac_id = self.acid.to_string();
         let time = unix_second().to_string();
@@ -391,39 +443,14 @@ impl SrunClient {
             ("_", &time),
         ];
 
-        let result: PortalResponse = {
-            #[cfg(feature = "reqwest")]
-            {
-                let resp = req.query(&query).send()?.bytes()?;
-                Self::parse_resp(&resp)?
-            }
-            #[cfg(feature = "ureq")]
-            {
-                let resp = req.query_vec(query).call()?.into_string()?;
-                let resp = resp.as_bytes();
-                Self::parse_resp(resp)?
-            }
-        };
+        let result: PortalResponse = self.get_json(PATH_PORTAL, &query)?;
 
         println!("{:#?}", result);
         Ok(())
     }
 
     pub fn user_info(&mut self) -> Result<String> {
-        let req = self
-            .get_http_client()?
-            .get(format!("{}{}", self.auth_server, PATH_USER_INFO).as_str());
-
-        Ok({
-            #[cfg(feature = "reqwest")]
-            {
-                req.send()?.text()?
-            }
-            #[cfg(feature = "ureq")]
-            {
-                todo!()
-            }
-        })
+        self.get_text_redir(PATH_USER_INFO)
     }
 
     fn current_ip(&self) -> Option<String> {
@@ -432,15 +459,14 @@ impl SrunClient {
 
     pub fn daemon(&mut self) {
         let delay = Duration::from_secs(5);
+        let abroad_delay = Duration::from_secs(3);
         let mut abroad = false;
-        let mut ever_up = false;
+        let mut up = false;
 
         loop {
-            let r = self.login();
-            debug!("login: {:?}", r);
-            match r {
-                Ok(r) => {
-                    if r != Abroad && abroad {
+            if let Some(f) = self.ip_filter.as_mut() {
+                if f.check() {
+                    if abroad {
                         abroad = false;
                         if let Some(ip) = self.current_ip() {
                             info!("back: {ip}");
@@ -448,31 +474,37 @@ impl SrunClient {
                             info!("back");
                         }
                     }
-                    match r {
-                        Logged(online) => {
-                            if !ever_up {
-                                info!("online: {online}");
-                            }
-                            ever_up = true;
-                        }
-                        Success => {
-                            ever_up = true;
-                        }
-                        Abroad => {
-                            if !abroad {
-                                if let Some(ip) = self.current_ip() {
-                                    info!("into abroad: {ip}");
-                                } else {
-                                    info!("into abroad");
-                                }
-                            }
-                            abroad = true;
-                        }
-                        Failed => {
-                            error!("srun auth failed");
+                } else {
+                    if !abroad {
+                        if let Some(ip) = self.current_ip() {
+                            info!("into abroad: {ip}");
+                        } else {
+                            info!("into abroad");
                         }
                     }
+                    abroad = true;
+                    thread::sleep(abroad_delay);
+                    continue;
                 }
+            }
+            let r = self.login();
+            debug!("login: {:?}", r);
+            match r {
+                Ok(r) => match r {
+                    Logged(online) => {
+                        if !up {
+                            info!("online: {online}");
+                        }
+                        up = true;
+                    }
+                    Success => {
+                        up = false;
+                    }
+                    Failed => {
+                        error!("srun failed");
+                        up = false;
+                    }
+                },
                 Err(e) => {
                     error!("network error: {e}");
                 }
