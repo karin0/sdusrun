@@ -387,8 +387,8 @@ impl SrunClient {
         };
 
         debug!("will try at most {} times...", self.retry_times);
-        thread::sleep(Duration::from_millis(100));
         for ti in 1..=self.retry_times {
+            thread::sleep(Duration::from_millis(self.retry_delay as u64));
             let password = format!("{{MD5}}{}", hmd5);
             let ac_id = self.acid.to_string();
             let n = self.n.to_string();
@@ -422,7 +422,6 @@ impl SrunClient {
                 return Ok(Success);
             }
             error!("try {}/{}: failed", ti, self.retry_times);
-            thread::sleep(Duration::from_millis(self.retry_delay as u64));
         }
         Ok(Failed)
     }
@@ -494,8 +493,8 @@ impl SrunClient {
                     Logged(online) => {
                         if !up {
                             info!("online: {online}");
+                            up = true;
                         }
-                        up = true;
                     }
                     Success => {
                         up = false;
@@ -507,6 +506,7 @@ impl SrunClient {
                 },
                 Err(e) => {
                     error!("network error: {e}");
+                    up = false;
                 }
             };
             thread::sleep(delay);
