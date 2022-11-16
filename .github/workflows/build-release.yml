@@ -27,14 +27,6 @@ jobs:
 
       - uses: actions/checkout@v2
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          target: ${{ matrix.target }}
-          toolchain: nightly
-          default: true
-          override: true
-
       - uses: actions/cache@v3
         with:
           path: |
@@ -44,6 +36,15 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          default: true
+          override: true
 
       - run: cargo install cross --git https://github.com/cross-rs/cross || true
         if: matrix.target != 'x86_64-unknown-linux-gnu'
@@ -52,6 +53,7 @@ jobs:
         shell: bash
         run: |
           set -e
+          cargo update
           target=${{ matrix.target }}
           if [ $target = x86_64-unknown-linux-gnu ]; then
             cargo build --release
