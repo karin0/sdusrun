@@ -5,7 +5,7 @@ use crate::{
     Result, User,
 };
 use hmac::{Hmac, Mac};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use md5::Md5;
 use once_cell::unsync::OnceCell;
 use quick_error::quick_error;
@@ -342,7 +342,7 @@ impl SrunClient {
 
         let msg = self.user_info()?;
         if msg.contains("not_online_error") {
-            info!("offline: {}", msg);
+            warn!("offline: {}", msg);
         } else {
             return Ok(Logged(msg));
         }
@@ -467,12 +467,12 @@ impl SrunClient {
             if let Some(f) = self.ip_filter.as_mut() {
                 if f.check() {
                     if abroad {
-                        abroad = false;
                         if let Some(ip) = self.current_ip() {
                             info!("back: {ip}");
                         } else {
                             info!("back");
                         }
+                        abroad = false;
                     }
                 } else {
                     if !abroad {
@@ -481,8 +481,8 @@ impl SrunClient {
                         } else {
                             info!("into abroad");
                         }
+                        abroad = true;
                     }
-                    abroad = true;
                     thread::sleep(abroad_delay);
                     continue;
                 }
