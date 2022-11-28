@@ -12,8 +12,6 @@ use quick_error::quick_error;
 use serde::{de::DeserializeOwned, Deserialize};
 use sha1::{Digest, Sha1};
 use std::{
-    net::IpAddr,
-    str::FromStr,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -50,8 +48,8 @@ pub struct SrunClient {
     utype: i32,
     time: u64,
 
-    http: OnceCell<reqwest::blocking::Client>,
-    http_redir: OnceCell<reqwest::blocking::Client>,
+    http: OnceCell<ureq::Agent>,
+    http_redir: OnceCell<ureq::Agent>,
     referer: Option<String>,
     ip_filter: Option<IpFilter>,
 }
@@ -155,47 +153,47 @@ impl SrunClient {
         self
     }
 
-    #[cfg(feature = "reqwest")]
-    pub fn http_builder(&self) -> reqwest::blocking::ClientBuilder {
-        use reqwest::header::{HeaderMap, HeaderValue};
-        let mut headers: HeaderMap = HeaderMap::with_capacity(5);
-        headers.append("DNT", HeaderValue::from_static("1"));
-        headers.append(
-            "X-Requested-With",
-            HeaderValue::from_static("XMLHttpRequest"),
-        );
-        headers.append("User-Agent", HeaderValue::from_static(USER_AGENT));
-        headers.append("Sec-Fetch-Mode", HeaderValue::from_static("cors"));
-        headers.append("Sec-Fetch-Site", HeaderValue::from_static("same-origin"));
-        let client = reqwest::blocking::ClientBuilder::default()
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(10));
+    #[cfg(feature = "ureq")]
+    fn ureq_middleware(
+        req: ureq::Request,
+        next: ureq::MiddlewareNext,
+    ) -> std::result::Result<ureq::Response, ureq::Error> {
+        let req = req
+            .set("DNT", "1")
+            .set("X-Requested-With", "XMLHttpRequest")
+            .set("Sec-Fetch-Mode", "cors")
+            .set("Sec-Fetch-Site", "same-origin");
+        next.handle(req)
+    }
+
+    #[cfg(feature = "ureq")]
+    pub fn http_builder(&self, redirects: u32) -> ureq::AgentBuilder {
+        let client = ureq::AgentBuilder::new()
+            .middleware(Self::ureq_middleware)
+            .user_agent(USER_AGENT)
+            .redirects(redirects)
+            .timeout(Duration::from_secs(10));
         if self.strict_bind && !self.ip.is_empty() {
-            let local_addr = IpAddr::from_str(&self.ip).unwrap();
-            client.local_address(local_addr)
+            todo!()
+            // let local_addr = IpAddr::from_str(&self.ip).unwrap();
+            // client.local_address(local_addr)
         } else {
             client
         }
     }
 
-    #[cfg(feature = "reqwest")]
-    pub fn get_http_client(&self) -> Result<&reqwest::blocking::Client> {
-        self.http.get_or_try_init(|| {
-            Ok(self
-                .http_builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?)
-        })
-    }
-
-    #[cfg(feature = "reqwest")]
-    pub fn get_http_client_redir(&self) -> Result<&reqwest::blocking::Client> {
-        self.http_redir
-            .get_or_try_init(|| Ok(self.http_builder().build()?))
+    #[cfg(feature = "ureq")]
+    pub fn get_http_client(&self) -> Result<&ureq::Agent> {
+        Ok(self.http.get_or_init(|| self.http_builder(0).build()))
     }
 
     #[cfg(feature = "ureq")]
-    pub fn get_http_client(&self) -> Result<ureq::Agent> {
+    pub fn get_http_client_redir(&self) -> Result<&ureq::Agent> {
+        Ok(self.http_redir.get_or_init(|| self.http_builder(5).build()))
+    }
+
+    #[cfg(feature = "ureq_connector")]
+    fn _get_http_client(&self) -> Result<ureq::Agent> {
         use crate::http_client::BindConnector;
         use std::net::SocketAddr;
 
@@ -212,31 +210,23 @@ impl SrunClient {
         })
     }
 
-    fn parse_resp<T: DeserializeOwned>(resp: &[u8]) -> serde_json::Result<T> {
-        serde_json::from_slice(&resp[CALLBACK_NAME.len() + 1..resp.len() - 1])
-    }
-
-    #[cfg(feature = "reqwest")]
-    fn cli_get_req(
-        &self,
-        cli: &reqwest::blocking::Client,
-        path: &str,
-    ) -> reqwest::blocking::RequestBuilder {
+    #[cfg(feature = "ureq")]
+    fn cli_get_req(&self, cli: &ureq::Agent, path: &str) -> ureq::Request {
         let r = cli.get(format!("{}{}", self.auth_server, path).as_str());
         if let Some(s) = &self.referer {
-            r.header("Referer", s)
+            r.set("Referer", s)
         } else {
             r
         }
     }
 
-    #[cfg(feature = "reqwest")]
-    fn get_req(&self, path: &str) -> Result<reqwest::blocking::RequestBuilder> {
+    #[cfg(feature = "ureq")]
+    fn get_req(&self, path: &str) -> Result<ureq::Request> {
         Ok(self.cli_get_req(self.get_http_client()?, path))
     }
 
-    #[cfg(feature = "reqwest")]
-    fn get_req_redir(&self, path: &str) -> Result<reqwest::blocking::RequestBuilder> {
+    #[cfg(feature = "ureq")]
+    fn get_req_redir(&self, path: &str) -> Result<ureq::Request> {
         Ok(self.cli_get_req(self.get_http_client_redir()?, path))
     }
 
@@ -246,14 +236,18 @@ impl SrunClient {
             #[cfg(feature = "reqwest")]
             {
                 let resp = req.query(&query).send()?.bytes()?;
-                Self::parse_resp(&resp)
+                serde_json::from_slice(&resp[CALLBACK_NAME.len() + 1..resp.len() - 1])
             }
             #[cfg(feature = "ureq")]
             {
                 // FIXME
-                let resp = req.query_vec(query).call()?.into_string()?;
+                let mut req = req;
+                for (k, v) in query {
+                    req = req.query(k, v)
+                }
+                let resp = req.call()?.into_string()?;
                 let resp = resp.as_bytes();
-                Self::parse_resp(resp)
+                serde_json::from_slice(&resp[CALLBACK_NAME.len() + 1..resp.len() - 1])
             }
         }?)
     }
@@ -267,7 +261,7 @@ impl SrunClient {
             }
             #[cfg(feature = "ureq")]
             {
-                todo!()
+                req.call()?.into_string()?
             }
         })
     }
@@ -305,14 +299,12 @@ impl SrunClient {
     }
 
     fn refresh(&mut self) -> Result<()> {
-        let index = self.get_req(PATH_INDEX)?.send()?;
-        let base = index.url();
+        let index = self.get_req(PATH_INDEX)?.call()?;
+        let base = url::Url::parse(index.get_url())?;
         debug!("index: {index:?}");
         let url = index
-            .headers()
-            .get("Location")
+            .header("Location")
             .ok_or_else(|| Box::new(SrunError::NoAcidError))?
-            .to_str()?
             .to_owned();
         let p = match url.find("ac_id=") {
             Some(p) => p + 6,
@@ -323,8 +315,9 @@ impl SrunClient {
             _ => url.len(),
         };
         let acid = url[p..q].parse::<i32>()?;
+        let url = base.join(&url)?.to_string();
         info!("acid: {acid} ({url})");
-        self.referer = Some(base.join(&url)?.to_string());
+        self.referer = Some(url);
         self.acid = acid;
         Ok(())
     }

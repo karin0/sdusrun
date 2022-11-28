@@ -13,7 +13,4 @@ pub use file::read_config_from_file;
 mod utils;
 pub use utils::select_ip;
 
-#[cfg(feature = "ureq")]
-mod http_client;
-
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
