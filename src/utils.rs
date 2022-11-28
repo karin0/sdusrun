@@ -122,6 +122,11 @@ impl IpFilter {
     pub fn check(&mut self) -> bool {
         self.refresh();
         for int in self.ifs.as_ref().unwrap() {
+            if let Some(prefix) = &self.int_prefix {
+                if !int.name.starts_with(prefix) {
+                    continue;
+                }
+            }
             if let IpAddr::V4(ip) = int.addr.ip() {
                 if ip >= self.min && ip < self.max {
                     debug!("found ip: {:?}", int);
