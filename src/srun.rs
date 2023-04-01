@@ -452,7 +452,7 @@ impl SrunClient {
 
     pub fn daemon(&mut self) {
         let delay = Duration::from_secs(5);
-        let abroad_delay = Duration::from_secs(3);
+        let abroad_delay = Duration::from_secs(1);
         let mut abroad = false;
         let mut up = false;
 
