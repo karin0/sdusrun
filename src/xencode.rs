@@ -1,13 +1,14 @@
 use base64::{
     alphabet::Alphabet,
-    engine::fast_portable::{FastPortable, PAD},
+    engine::general_purpose::{GeneralPurpose, PAD},
+    Engine,
 };
 use once_cell::sync::Lazy;
 
 const BASE64_ALPHABET: &str = "LVoJPiCN2R8G90yg+hmFHuacZ1OWMnrsSTXkYpUq/3dlbfKwv6xztjI7DeBE45QA";
-static BASE64_ENGINE: Lazy<FastPortable> = Lazy::new(|| {
-    let alphabet = Alphabet::from_str(BASE64_ALPHABET).unwrap();
-    FastPortable::from(&alphabet, PAD)
+static BASE64_ENGINE: Lazy<GeneralPurpose> = Lazy::new(|| {
+    let alphabet = Alphabet::new(BASE64_ALPHABET).unwrap();
+    GeneralPurpose::new(&alphabet, PAD)
 });
 
 fn mix(buffer: &[u8], append_size: bool) -> Vec<u32> {
@@ -83,5 +84,5 @@ pub fn param_i(username: &str, password: &str, ip: &str, acid: i32, token: &str)
     })
     .to_string();
     let xen = x_encode(info.as_str(), token);
-    String::from("{SRBX1}") + base64::encode_engine(xen, &*BASE64_ENGINE).as_str()
+    String::from("{SRBX1}") + BASE64_ENGINE.encode(xen).as_str()
 }
