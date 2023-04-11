@@ -90,7 +90,7 @@ impl SrunClient {
             os: "Windows 10".to_string(),
             name: "Windows".to_string(),
             retry_delay: 300,
-            retry_times: 2,
+            retry_times: 10,
             ip_filter,
             ..Default::default()
         }
@@ -409,13 +409,11 @@ impl SrunClient {
 
             info!("query: {:?}", query);
             let result: PortalResponse = self.get_json(PATH_PORTAL, &query)?;
-            info!("portal: {result:?}");
-
             if !result.access_token.is_empty() {
-                info!("try {}/{}: success", ti, self.retry_times);
+                info!("try {}/{}: success: {:?}", ti, self.retry_times, result);
                 return Ok(Success);
             }
-            error!("try {}/{}: failed", ti, self.retry_times);
+            error!("try {}/{}: failed: {:?}", ti, self.retry_times, result);
         }
         Ok(Failed)
     }
