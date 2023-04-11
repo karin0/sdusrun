@@ -444,39 +444,13 @@ impl SrunClient {
         self.get_text_redir(PATH_USER_INFO)
     }
 
-    fn current_ip(&self) -> Option<String> {
-        self.ip_filter.as_ref().and_then(|f| f.current())
-    }
-
     pub fn daemon(&mut self) {
         let delay = Duration::from_secs(5);
-        let abroad_delay = Duration::from_secs(1);
-        let mut abroad = false;
         let mut up = false;
 
         loop {
             if let Some(f) = self.ip_filter.as_mut() {
-                if f.check() {
-                    if abroad {
-                        if let Some(ip) = self.current_ip() {
-                            info!("back: {ip}");
-                        } else {
-                            info!("back");
-                        }
-                        abroad = false;
-                    }
-                } else {
-                    if !abroad {
-                        if let Some(ip) = self.current_ip() {
-                            info!("into abroad: {ip}");
-                        } else {
-                            info!("into abroad");
-                        }
-                        abroad = true;
-                    }
-                    thread::sleep(abroad_delay);
-                    continue;
-                }
+                f.wait().unwrap();
             }
             let r = self.login();
             debug!("login: {:?}", r);

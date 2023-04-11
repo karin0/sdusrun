@@ -1,5 +1,5 @@
-use crate::Result;
-use log::debug;
+use crate::{ip_monitor::IpMonitor, Result};
+use log::{error, info};
 use quick_error::quick_error;
 use std::{
     io,
@@ -7,6 +7,7 @@ use std::{
     option::Option,
     process::exit,
     str::FromStr,
+    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     time::{Duration, SystemTime},
 };
 
@@ -91,81 +92,99 @@ pub fn select_ip() -> Option<String> {
     None
 }
 
-#[derive(Debug, Clone)]
+pub fn get_ip(dev: &str) -> Result<Ipv4Addr> {
+    let ifs = if_addrs::get_if_addrs()?;
+    for int in ifs {
+        if let IpAddr::V4(ip) = int.addr.ip() {
+            if int.name == dev {
+                return Ok(ip);
+            }
+        }
+    }
+    Ok(Ipv4Addr::UNSPECIFIED)
+}
+
+#[derive(Debug)]
 pub struct IpFilter {
+    rx: Receiver<Ipv4Addr>,
+    ip: Ipv4Addr,
     min: Ipv4Addr,
     max: Ipv4Addr,
-    int_prefix: Option<String>,
-    ifs: Option<Vec<if_addrs::Interface>>,
+    dev: String,
+}
+
+pub fn monitor(dev: &str, tx: Sender<Ipv4Addr>) -> Result<()> {
+    let mut m = IpMonitor::new(dev)?;
+    loop {
+        let ip = m.ip()?;
+        if let Err(e) = tx.send(ip) {
+            error!("send error: {}", e);
+            return Err("send error".into());
+        }
+    }
 }
 
 impl IpFilter {
     pub fn from_env() -> Option<Self> {
-        if let Ok(min) = std::env::var("SRUN_MIN_IP") {
-            let min = Ipv4Addr::from_str(&min).unwrap();
-            let max = Ipv4Addr::from_str(&std::env::var("SRUN_MAX_IP").unwrap()).unwrap();
-            Some(Self {
-                min,
-                max,
-                int_prefix: std::env::var("SRUN_INTERFACE_PREFIX").ok(),
-                ifs: None,
-            })
-        } else {
-            None
-        }
+        let min = match std::env::var("SRUN_MIN_IP") {
+            Ok(min) => min,
+            Err(_) => return None,
+        };
+        let min = Ipv4Addr::from_str(&min).unwrap();
+        let max = Ipv4Addr::from_str(&std::env::var("SRUN_MAX_IP").unwrap()).unwrap();
+        let dev = std::env::var("SRUN_INTERFACE").unwrap();
+        let dev2 = dev.clone();
+
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let r = monitor(&dev2, tx);
+            if let Err(e) = r {
+                error!("monitor error: {}", e);
+            }
+        });
+        let ip = get_ip(&dev).unwrap();
+        Some(IpFilter {
+            rx,
+            ip,
+            min,
+            max,
+            dev,
+        })
     }
 
-    fn refresh(&mut self) {
-        self.ifs = Some(if_addrs::get_if_addrs().unwrap());
-    }
-
-    pub fn check(&mut self) -> bool {
-        self.refresh();
-        for int in self.ifs.as_ref().unwrap() {
-            if let Some(prefix) = &self.int_prefix {
-                if !int.name.starts_with(prefix) {
-                    continue;
+    pub fn wait(&mut self) -> Result<()> {
+        let mut new_ip = self.ip;
+        loop {
+            match self.rx.try_recv() {
+                Ok(ip) => {
+                    new_ip = ip;
                 }
-            }
-            if let IpAddr::V4(ip) = int.addr.ip() {
-                if ip >= self.min && ip < self.max {
-                    debug!("found ip: {:?}", int);
-                    return true;
+                Err(TryRecvError::Empty) => {
+                    break;
+                }
+                Err(e) => {
+                    return Err(e.into());
                 }
             }
         }
-        false
-    }
-
-    pub fn current(&self) -> Option<String> {
-        if let Some(pre) = &self.int_prefix {
-            if let Some(ifs) = &self.ifs {
-                let mut name = None;
-                let mut res = vec![];
-                for int in ifs {
-                    if let IpAddr::V4(ip) = int.addr.ip() {
-                        if int.name.starts_with(pre) {
-                            res.push(if let Some(last) = name {
-                                if int.name.eq(last) {
-                                    ip.to_string()
-                                } else {
-                                    format!("{}: {}", int.name, ip)
-                                }
-                            } else {
-                                format!("{}: {}", int.name, ip)
-                            });
-                            name = Some(&int.name);
-                        }
-                    }
+        if new_ip != self.ip {
+            self.ip = new_ip;
+            info!("{}: {}", self.dev, self.ip);
+        }
+        loop {
+            if self.ip >= self.min && self.ip < self.max {
+                return Ok(());
+            }
+            match self.rx.recv() {
+                Ok(ip) => {
+                    self.ip = ip;
+                    info!("{} changed: {}", self.dev, ip);
                 }
-                return if res.is_empty() {
-                    None
-                } else {
-                    Some(res.join(", "))
-                };
+                Err(e) => {
+                    return Err(e.into());
+                }
             }
         }
-        None
     }
 }
 

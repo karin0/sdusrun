@@ -14,7 +14,6 @@ exclude = [".github/"]
 [profile.release]
 strip = true
 lto = true
-panic = "abort"
 
 
 [dependencies]
@@ -34,6 +33,7 @@ socket2 = "0.5"
 log = "0.4"
 pretty_env_logger = { git = "https://github.com/karin0/pretty-env-logger.git" }
 url = "2.3"
+nix = { version = "0.26", features = ["signal"] }
 
 [features]
 default = ["ureq"]
