@@ -152,12 +152,14 @@ impl IpFilter {
         })
     }
 
-    pub fn wait(&mut self) -> Result<()> {
+    pub fn wait(&mut self) -> Result<bool> {
         let mut new_ip = self.ip;
+        let mut changed = false;
         loop {
             match self.rx.try_recv() {
                 Ok(ip) => {
                     new_ip = ip;
+                    changed = true;
                 }
                 Err(TryRecvError::Empty) => {
                     break;
@@ -171,18 +173,15 @@ impl IpFilter {
             self.ip = new_ip;
             info!("{}: {}", self.dev, self.ip);
         }
+        if self.ip >= self.min && self.ip < self.max {
+            return Ok(changed);
+        }
         loop {
+            let ip = self.rx.recv()?;
+            self.ip = ip;
+            info!("{} changed: {}", self.dev, ip);
             if self.ip >= self.min && self.ip < self.max {
-                return Ok(());
-            }
-            match self.rx.recv() {
-                Ok(ip) => {
-                    self.ip = ip;
-                    info!("{} changed: {}", self.dev, ip);
-                }
-                Err(e) => {
-                    return Err(e.into());
-                }
+                return Ok(true);
             }
         }
     }

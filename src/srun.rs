@@ -380,7 +380,6 @@ impl SrunClient {
             format!("{:x}", sha1_hasher.finalize())
         };
 
-        debug!("will try at most {} times...", self.retry_times);
         for ti in 1..=self.retry_times {
             thread::sleep(Duration::from_millis(self.retry_delay as u64));
             let password = format!("{{MD5}}{}", hmd5);
@@ -450,29 +449,29 @@ impl SrunClient {
 
         loop {
             if let Some(f) = self.ip_filter.as_mut() {
-                f.wait().unwrap();
+                if f.wait().unwrap() {
+                    up = false;
+                }
             }
             let r = self.login();
             debug!("login: {:?}", r);
+            let old_up = up;
+            up = false;
             match r {
                 Ok(r) => match r {
                     Logged(online) => {
-                        if !up {
+                        if !old_up {
                             info!("online: {online}");
-                            up = true;
                         }
+                        up = true;
                     }
-                    Success => {
-                        up = false;
-                    }
+                    Success => {}
                     Failed => {
                         error!("srun failed");
-                        up = false;
                     }
                 },
                 Err(e) => {
                     error!("network error: {e}");
-                    up = false;
                 }
             };
             thread::sleep(delay);
