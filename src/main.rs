@@ -44,6 +44,7 @@ fn login_match(args: &[String]) {
         opts.optflag("", "continue", "[Unimplemented] continuous login");
         opts.optopt("u", "username", "username", "");
         opts.optopt("p", "password", "password", "");
+        opts.optopt("P", "password-file", "password-file", "");
         opts.optopt("i", "ip", "ip", "");
         opts.optflag("d", "detect", "detect client ip");
         opts.optflag("", "select-ip", "select client ip");
@@ -165,10 +166,19 @@ fn single_login(matches: Matches) {
     };
     let password = match matches.opt_str("p") {
         Some(u) => u,
-        None => {
-            println!("need password");
-            return;
-        }
+        None => match matches.opt_str("P") {
+            Some(u) => match std::fs::read_to_string(u) {
+                Ok(p) => p.trim().to_string(),
+                Err(e) => {
+                    eprintln!("read password file error: {}", e);
+                    return;
+                }
+            },
+            None => {
+                println!("need password");
+                return;
+            }
+        },
     };
     let detect_ip = matches.opt_present("d");
     let ip = match matches.opt_str("i") {
