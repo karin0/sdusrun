@@ -448,8 +448,8 @@ impl SrunClient {
         let mut up = false;
 
         loop {
-            if let Some(f) = self.ip_filter.as_mut() {
-                if f.wait().unwrap() {
+            if let Some(ref f) = self.ip_filter {
+                if f.wait() {
                     up = false;
                 }
             }

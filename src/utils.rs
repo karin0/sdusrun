@@ -1,5 +1,5 @@
 use crate::{ip_monitor::IpMonitor, Result};
-use log::{error, info};
+use log::info;
 use quick_error::quick_error;
 use std::{
     io,
@@ -7,7 +7,7 @@ use std::{
     option::Option,
     process::exit,
     str::FromStr,
-    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    sync::{Arc, Condvar, Mutex},
     time::{Duration, SystemTime},
 };
 
@@ -104,22 +104,25 @@ pub fn get_ip(dev: &str) -> Result<Ipv4Addr> {
     Ok(Ipv4Addr::UNSPECIFIED)
 }
 
+type Ctx = (Mutex<(Ipv4Addr, bool)>, Condvar);
+
 #[derive(Debug)]
 pub struct IpFilter {
-    rx: Receiver<Ipv4Addr>,
-    ip: Ipv4Addr,
+    ctx: Arc<Ctx>,
     min: Ipv4Addr,
     max: Ipv4Addr,
-    dev: String,
 }
 
-pub fn monitor(dev: &str, tx: Sender<Ipv4Addr>) -> Result<()> {
+pub fn monitor(dev: &str, min: Ipv4Addr, max: Ipv4Addr, ctx: Arc<Ctx>) -> Result<()> {
     let mut m = IpMonitor::new(dev)?;
     loop {
         let ip = m.ip()?;
-        if let Err(e) = tx.send(ip) {
-            error!("send error: {}", e);
-            return Err("send error".into());
+        *ctx.0.lock().unwrap() = (ip, true);
+        if ip >= min && ip < max {
+            info!("{}: {}", dev, ip);
+            ctx.1.notify_one();
+        } else {
+            info!("{}: {} (abroad)", dev, ip);
         }
     }
 }
@@ -133,56 +136,25 @@ impl IpFilter {
         let min = Ipv4Addr::from_str(&min).unwrap();
         let max = Ipv4Addr::from_str(&std::env::var("SRUN_MAX_IP").unwrap()).unwrap();
         let dev = std::env::var("SRUN_INTERFACE").unwrap();
-        let dev2 = dev.clone();
 
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            let r = monitor(&dev2, tx);
-            if let Err(e) = r {
-                error!("monitor error: {}", e);
-            }
-        });
         let ip = get_ip(&dev).unwrap();
-        Some(IpFilter {
-            rx,
-            ip,
-            min,
-            max,
-            dev,
-        })
+        let ctx = Arc::new((Mutex::new((ip, false)), Condvar::new()));
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            monitor(&dev, min, max, ctx2).unwrap();
+        });
+        Some(IpFilter { ctx, min, max })
     }
 
-    pub fn wait(&mut self) -> Result<bool> {
-        let mut new_ip = self.ip;
-        let mut changed = false;
+    pub fn wait(&self) -> bool {
+        let mut lock = self.ctx.0.lock().unwrap();
         loop {
-            match self.rx.try_recv() {
-                Ok(ip) => {
-                    new_ip = ip;
-                    changed = true;
-                }
-                Err(TryRecvError::Empty) => {
-                    break;
-                }
-                Err(e) => {
-                    return Err(e.into());
-                }
+            let (ip, changed) = *lock;
+            if ip >= self.min && ip < self.max {
+                lock.1 = false;
+                return changed;
             }
-        }
-        if new_ip != self.ip {
-            self.ip = new_ip;
-            info!("{}: {}", self.dev, self.ip);
-        }
-        if self.ip >= self.min && self.ip < self.max {
-            return Ok(changed);
-        }
-        loop {
-            let ip = self.rx.recv()?;
-            self.ip = ip;
-            info!("{} changed: {}", self.dev, ip);
-            if self.ip >= self.min && self.ip < self.max {
-                return Ok(true);
-            }
+            lock = self.ctx.1.wait(lock).unwrap();
         }
     }
 }
