@@ -14,6 +14,7 @@ use std::{
 pub struct IpMonitor {
     ch: Child,
     out: BufReader<ChildStdout>,
+    buf: String,
 }
 
 impl IpMonitor {
@@ -27,13 +28,18 @@ impl IpMonitor {
             .spawn()?;
         let out = ch.stdout.take().unwrap();
         let out = BufReader::new(out);
-        Ok(IpMonitor { ch, out })
+        Ok(IpMonitor {
+            ch,
+            out,
+            buf: String::new(),
+        })
     }
 
     pub fn ip(&mut self) -> Result<Ipv4Addr> {
-        let mut line = String::new();
         loop {
-            let n = self.out.read_line(&mut line)?;
+            let line = &mut self.buf;
+            line.clear();
+            let n = self.out.read_line(line)?;
             if n == 0 {
                 return Err("EOF".into());
             }
