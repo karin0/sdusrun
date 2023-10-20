@@ -28,11 +28,12 @@ reqwest = { version = "0.11", features = ["blocking", "rustls-tls"], default-fea
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha-1 = "0.10"
-ureq = { version = "2.5", optional = true }
+ureq = { git = "https://github.com/zu1k/ureq.git", branch = "srun", default-features = false, optional = true }
 log = "0.4"
 pretty_env_logger = { git = "https://github.com/karin0/pretty-env-logger.git" }
 url = "2.3"
 nix = { version = "0.26", features = ["signal"] }
+socket2 = "0.5"
 
 [features]
 default = ["ureq"]
