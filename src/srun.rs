@@ -12,6 +12,7 @@ use quick_error::quick_error;
 use serde::{de::DeserializeOwned, Deserialize};
 use sha1::{Digest, Sha1};
 use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -23,6 +24,7 @@ const PATH_USER_INFO: &str = "/cgi-bin/rad_user_info";
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36";
 const CALLBACK_NAME: &str = "jQuery112407419864172676014_1566720734115";
+const HOST: &str = "gw.buaa.edu.cn:443";
 
 #[derive(Default, Debug)]
 pub struct SrunClient {
@@ -52,6 +54,7 @@ pub struct SrunClient {
     http_redir: OnceCell<ureq::Agent>,
     referer: Option<String>,
     ip_filter: Option<IpFilter>,
+    ip_addr: Option<Ipv4Addr>,
 }
 
 quick_error! {
@@ -172,7 +175,25 @@ impl SrunClient {
             .middleware(Self::ureq_middleware)
             .user_agent(USER_AGENT)
             .redirects(redirects)
-            .timeout(Duration::from_secs(10));
+            .timeout_connect(Duration::from_secs(5))
+            .timeout(Duration::from_secs(5))
+            .resolver(|addr: &str| match addr {
+                HOST => Ok(vec![([10, 200, 21, 4], 443).into()]),
+                _ => panic!("unknown addr {}", addr),
+            });
+        let client = match self.ip_addr {
+            Some(ip) => {
+                info!("binding to {}", ip);
+                client.connector(crate::http_client::BindConnector::new_bind(SocketAddr::V4(
+                    SocketAddrV4::new(ip, 0),
+                )))
+            }
+            _ => {
+                error!("not binding");
+                client
+            }
+        };
+
         if self.strict_bind && !self.ip.is_empty() {
             todo!()
             // let local_addr = IpAddr::from_str(&self.ip).unwrap();
@@ -364,7 +385,7 @@ impl SrunClient {
         );
 
         let check_sum = {
-            let check_sum = vec![
+            let check_sum = [
                 "",
                 &self.username,
                 &hmd5,
@@ -444,13 +465,17 @@ impl SrunClient {
     }
 
     pub fn daemon(&mut self) {
-        let delay = Duration::from_secs(5);
         let mut up = false;
 
         loop {
+            let mut delay = Duration::from_secs(5);
             if let Some(ref f) = self.ip_filter {
-                if f.wait() {
+                let (ip, changed) = f.wait();
+                self.ip_addr = Some(ip);
+                if changed {
                     up = false;
+                    self.http.take();
+                    self.http_redir.take();
                 }
             }
             let r = self.login();
@@ -468,10 +493,12 @@ impl SrunClient {
                     Success => {}
                     Failed => {
                         error!("srun failed");
+                        delay = Duration::from_secs(1);
                     }
                 },
                 Err(e) => {
                     error!("network error: {e}");
+                    delay = Duration::from_secs(1);
                 }
             };
             thread::sleep(delay);

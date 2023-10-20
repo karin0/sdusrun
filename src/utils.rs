@@ -146,13 +146,13 @@ impl IpFilter {
         Some(IpFilter { ctx, min, max })
     }
 
-    pub fn wait(&self) -> bool {
+    pub fn wait(&self) -> (Ipv4Addr, bool) {
         let mut lock = self.ctx.0.lock().unwrap();
         loop {
             let (ip, changed) = *lock;
             if ip >= self.min && ip < self.max {
                 lock.1 = false;
-                return changed;
+                return (ip, changed);
             }
             lock = self.ctx.1.wait(lock).unwrap();
         }
