@@ -113,10 +113,10 @@ pub struct IpFilter {
     max: Ipv4Addr,
 }
 
-pub fn monitor(dev: &str, min: Ipv4Addr, max: Ipv4Addr, ctx: Arc<Ctx>) -> Result<()> {
-    let mut m = IpMonitor::new(dev)?;
+pub fn monitor(dev: String, min: Ipv4Addr, max: Ipv4Addr, ctx: Arc<Ctx>) -> Result<()> {
+    let mut m = IpMonitor::new(&dev)?;
     loop {
-        let ip = m.ip()?;
+        let ip = m.ip();
         *ctx.0.lock().unwrap() = (ip, true);
         if ip >= min && ip < max {
             info!("{}: {}", dev, ip);
@@ -141,7 +141,7 @@ impl IpFilter {
         let ctx = Arc::new((Mutex::new((ip, false)), Condvar::new()));
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
-            monitor(&dev, min, max, ctx2).unwrap();
+            monitor(dev, min, max, ctx2).unwrap();
         });
         Some(IpFilter { ctx, min, max })
     }
@@ -151,6 +151,8 @@ impl IpFilter {
         loop {
             let (ip, changed) = *lock;
             if ip >= self.min && ip < self.max {
+                // Swap 'false' with the locked value, indicating whether it's changed since
+                // the last time we returned.
                 lock.1 = false;
                 return (ip, changed);
             }
