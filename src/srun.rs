@@ -465,10 +465,14 @@ impl SrunClient {
     }
 
     pub fn daemon(&mut self) {
+        const DELAY_LOGGED: Duration = Duration::from_secs(5);
+        const DELAY_RETRY_INITIAL: Duration = Duration::from_secs(1);
+        const DELAY_RETRY_MAX: Duration = Duration::from_secs(60 * 5);
+
         let mut up = false;
+        let mut delay_retry = DELAY_RETRY_INITIAL;
 
         loop {
-            let mut delay = Duration::from_secs(5);
             if let Some(ref f) = self.ip_filter {
                 let (ip, changed) = f.wait();
                 self.ip_addr = Some(ip);
@@ -482,26 +486,35 @@ impl SrunClient {
             debug!("login: {:?}", r);
             let old_up = up;
             up = false;
-            match r {
+            let ok = match r {
                 Ok(r) => match r {
                     Logged(online) => {
                         if !old_up {
                             info!("online: {online}");
                         }
                         up = true;
+                        true
                     }
-                    Success => {}
+                    Success => {
+                        true
+                    }
                     Failed => {
                         error!("srun failed");
-                        delay = Duration::from_secs(1);
+                        false
                     }
                 },
                 Err(e) => {
                     error!("network error: {e}");
-                    delay = Duration::from_secs(1);
+                    false
                 }
             };
-            thread::sleep(delay);
+            thread::sleep(if ok {
+                delay_retry = DELAY_RETRY_INITIAL;
+                DELAY_LOGGED
+            } else {
+                delay_retry = DELAY_RETRY_MAX.min(delay_retry * 2);
+                delay_retry
+            });
         }
     }
 }
